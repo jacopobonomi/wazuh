@@ -159,11 +159,7 @@ int main(int argc, char **argv) {
      * allocating only one segfaults it (config.c). agentd's own main() allocates the pair for
      * the same reason. */
     os_calloc(1, sizeof(agent), agt);
-#ifndef WIN32
-    /* There is no anti-tampering configuration on Windows: config.c does not even define the
-     * global there. */
     os_calloc(1, sizeof(anti_tampering), atc);
-#endif
 
     if (ClientConf(WAZUHCONF) < 0) {
         fprintf(stderr, "%s: could not read the configuration at '%s'.\n", AGENT_AUTH_NAME,

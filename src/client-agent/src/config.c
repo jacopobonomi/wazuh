@@ -20,9 +20,7 @@
 int run_foreground;
 keystore keys;
 agent *agt;
-#ifndef WIN32
 anti_tampering *atc;
-#endif
 int remote_conf;
 int rotate_log;
 int agent_debug_level;
