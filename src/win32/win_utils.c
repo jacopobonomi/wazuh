@@ -363,11 +363,20 @@ int local_start()
         merror_exit("Configuration file '%s' not found", cfg);
     }
 
+    /* anti_tampering is read by ClientConf() on every platform; on Windows it also drives
+     * w_service_tamper_protection() below. */
+    os_calloc(1, sizeof(anti_tampering), atc);
+
     /* Read agent config */
     mdebug1("Reading agent configuration.");
     if (ClientConf(cfg) < 0) {
         mlerror_exit(LOGLEVEL_ERROR, CLIENT_ERROR);
     }
+
+    /* With anti_tampering/package_uninstallation enabled, Administrators lose the right to stop,
+     * delete or reconfigure the service and to change its registry key; SYSTEM (this service, the
+     * MSI and WPK upgrades) keeps it. Restored to the defaults when the option is turned off. */
+    w_service_tamper_protection(atc->package_uninstallation);
 
     if (!w_agent_validate_manager_address(agt, NULL)) {
         mlerror_exit(LOGLEVEL_ERROR, CLIENT_ERROR);

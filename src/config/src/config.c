@@ -99,9 +99,7 @@ static int read_main_elements(const OS_XML *xml, int modules,
     const char *osgcp_pub = "gcp-pubsub";                       /* Google Cloud PubSub - Wazuh Module */
     const char *osgcp_bucket = "gcp-bucket";                    /* Google Cloud Bucket - Wazuh Module */
     const char *agent_upgrade = "agent-upgrade";                /* Agent Upgrade Module */
-#ifndef WIN32
     const char *anti_tampering = "anti_tampering";              /* Agent anti tampering Config */
-#endif
     /* Sections of the manager's own configuration (/etc/wazuh-manager/wazuh-manager.conf). They have no XML
      * parser anymore: an agent file that carries one is told so and the block is ignored. */
     const char *manager_sections[] = { "global", "remote", "auth", "wdb", "indexer", "vulnerability-detection",
@@ -177,12 +175,10 @@ static int read_main_elements(const OS_XML *xml, int modules,
                     }
                 }
             }
-#ifndef WIN32
         } else if (chld_node && (strcmp(node[i]->element, anti_tampering) == 0)) {
             if ((modules & ATAMPERING) && (Read_AntiTampering(chld_node, d1) < 0)) {
                 goto fail;
             }
-#endif
         } else if (strcmp(node[i]->element, osbuffer) == 0) {
             minfo("'%s' is no longer used and will be ignored. Event batching is configured "
                   "under <agent><batch>.", node[i]->element);

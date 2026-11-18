@@ -64,4 +64,12 @@ int local_start();
 int run_service_restart(void);
 #endif
 
+
+/**
+ * @brief Applies or removes the anti-tampering protection of the WazuhSvc service and its registry
+ * key (see win_service.c). Called at start with anti_tampering/package_uninstallation.
+ * @return 0 on success, -1 if any part could not be applied (logged).
+ */
+int w_service_tamper_protection(bool enable);
+
 #endif /* OS_WIN_H */
