@@ -78,9 +78,7 @@ int ClientConf(const char *cfgfile)
 
     agt->batch.interval = 10;
 
-#ifndef WIN32
     atc->package_uninstallation = false;
-#endif
 
     modules |= CCLIENT;
 
@@ -115,7 +113,6 @@ int ClientConf(const char *cfgfile)
     agt->enrollment.retry_delta =
         getDefine_Int_default("agent", "enrollment_retry_delta", 1, 3600, ENROLLMENT_RETRY_DELTA_S_DEFAULT);
 
-#ifndef WIN32
     if (ReadConfig(ATAMPERING, cfgfile, atc, NULL) < 0) {
         return OS_INVALID;
     }
@@ -126,7 +123,6 @@ int ClientConf(const char *cfgfile)
     if (remote_conf) {
         ReadConfig(ATAMPERING | CAGENT_CONFIG, AGENTCONFIG, atc, NULL);
     }
-#endif
 
     /* Last, so it sees everything ossec.conf had to say about <ssl>. Deliberately below the
      * ATAMPERING read above rather than beside the CCLIENT one: a resolver that ran before a

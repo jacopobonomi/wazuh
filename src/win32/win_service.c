@@ -13,6 +13,8 @@
 #include "shared.h"
 #include "os_win.h"
 #include <winsvc.h>
+#include <sddl.h>
+#include <aclapi.h>
 #include "syscheckd/src/db/include/db.h"
 #ifndef ARGV0
 #define ARGV0 "wazuh-agent"
@@ -410,6 +412,94 @@ VOID WINAPI OssecServiceCtrlHandler(DWORD dwOpcode)
 }
 
 /* Set the error code in the service */
+/* Service DACLs (SDDL). Defaults are what CreateService() gives a service; the protected one keeps
+ * SYSTEM's full control and leaves Administrators query, start and interrogate only: no
+ * SERVICE_STOP (WP), DELETE (SD), SERVICE_CHANGE_CONFIG (DC), WRITE_DAC (WD) or WRITE_OWNER (WO). */
+#define SVC_SDDL_DEFAULT   "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+#define SVC_SDDL_PROTECTED "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+/* The service's registry key: Start=4 would disable it, ImagePath would replace it. Protected: no
+ * inheritance, SYSTEM full control, Administrators and Users read only. */
+#define SVC_KEY_PATH       "MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WazuhSvc"
+#define SVC_KEY_PROTECTED  "D:P(A;CI;KA;;;SY)(A;CI;KR;;;BA)(A;CI;KR;;;BU)"
+
+static int set_service_dacl(const char *sddl)
+{
+    PSECURITY_DESCRIPTOR sd = NULL;
+    SC_HANDLE scm = NULL, svc = NULL;
+    int ret = -1;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, SDDL_REVISION_1, &sd, NULL)) {
+        merror("Could not build the service security descriptor (%lu).", GetLastError());
+        return -1;
+    }
+    if ((scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT)) &&
+            (svc = OpenService(scm, g_lpszServiceName, READ_CONTROL | WRITE_DAC))) {
+        if (SetServiceObjectSecurity(svc, DACL_SECURITY_INFORMATION, sd)) {
+            ret = 0;
+        } else {
+            merror("Could not set the security of service '%s' (%lu).", g_lpszServiceName, GetLastError());
+        }
+    } else {
+        merror("Could not open service '%s' to set its security (%lu).", g_lpszServiceName, GetLastError());
+    }
+    if (svc) {
+        CloseServiceHandle(svc);
+    }
+    if (scm) {
+        CloseServiceHandle(scm);
+    }
+    LocalFree(sd);
+    return ret;
+}
+
+static int set_service_key_dacl(bool protect)
+{
+    DWORD rc;
+
+    if (protect) {
+        PSECURITY_DESCRIPTOR sd = NULL;
+        PACL dacl = NULL;
+        BOOL present = FALSE, defaulted = FALSE;
+
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(SVC_KEY_PROTECTED, SDDL_REVISION_1, &sd, NULL) ||
+                !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted)) {
+            merror("Could not build the service key security descriptor (%lu).", GetLastError());
+            LocalFree(sd);
+            return -1;
+        }
+        rc = SetNamedSecurityInfoA(SVC_KEY_PATH, SE_REGISTRY_KEY,
+                                   DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                   NULL, NULL, dacl, NULL);
+        LocalFree(sd);
+    } else {
+        /* An empty, unprotected DACL: the key goes back to what it inherits from Services. */
+        ACL empty;
+        InitializeAcl(&empty, sizeof(empty), ACL_REVISION);
+        rc = SetNamedSecurityInfoA(SVC_KEY_PATH, SE_REGISTRY_KEY,
+                                   DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                                   NULL, NULL, &empty, NULL);
+    }
+    if (rc != ERROR_SUCCESS) {
+        merror("Could not set the security of the service registry key (%lu).", rc);
+        return -1;
+    }
+    return 0;
+}
+
+int w_service_tamper_protection(bool enable)
+{
+    int ret = set_service_dacl(enable ? SVC_SDDL_PROTECTED : SVC_SDDL_DEFAULT);
+
+    if (set_service_key_dacl(enable) < 0) {
+        ret = -1;
+    }
+    if (ret == 0) {
+        minfo(enable ? "Anti-tampering: service '%s' protected (Administrators cannot stop, delete or reconfigure it)."
+                     : "Anti-tampering: service '%s' permissions restored to the defaults.", g_lpszServiceName);
+    }
+    return ret;
+}
+
 void WinSetError()
 {
     OssecServiceCtrlHandler(SERVICE_CONTROL_STOP);
