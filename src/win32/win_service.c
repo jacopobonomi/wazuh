@@ -486,7 +486,7 @@ static int set_service_key_dacl(bool protect)
     return 0;
 }
 
-int w_service_tamper_protection(bool enable)
+int w_service_tamper_protection(int enable)
 {
     int ret = set_service_dacl(enable ? SVC_SDDL_PROTECTED : SVC_SDDL_DEFAULT);
 
