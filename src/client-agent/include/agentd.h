@@ -127,6 +127,12 @@ char* authenticate_and_get_token(const char *userpass, const char *host, bool ss
  * */
 bool package_uninstall_validation(const char *uninstall_auth_token, const char *uninstall_auth_login, const char *uninstall_auth_host, bool ssl_verify);
 
+/**
+ * Installs the SIGTERM/SIGINT/SIGQUIT handlers of wazuh-agentd with SA_SIGINFO, so that the stop is
+ * logged together with the process that sent it (PID, UID, command line and parent).
+ * */
+void agentd_install_stop_handlers(void);
+
 // Thread to rotate internal log
 #ifdef WIN32
 DWORD WINAPI w_rotate_log_thread(LPVOID arg);

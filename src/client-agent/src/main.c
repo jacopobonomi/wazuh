@@ -309,6 +309,8 @@ int main(int argc, char **argv)
 
     /* Start the signal manipulation */
     StartSIG2(ARGV0, agentd_shutdown);
+    /* Same handler, with the sender's PID and UID: the stop is logged with who asked for it. */
+    agentd_install_stop_handlers();
 
     /* Agentd Start */
     AgentdStart(uid, gid, user, group);

@@ -23,13 +23,99 @@ void reload_handler(int signum) {
     }
 }
 
+/* Who asked the agent to stop: filled by agentd_stop_siginfo() from the siginfo of the signal. */
+static volatile sig_atomic_t stop_sender_pid = 0;
+static volatile sig_atomic_t stop_sender_uid = -1;
+
+/* Copies /proc/<pid>/<name> into out, NULs (cmdline separators) turned into spaces. */
+static void read_proc_text(pid_t pid, const char *name, char *out, size_t len)
+{
+    char path[64];
+    ssize_t n = -1;
+    int fd;
+
+    out[0] = '\0';
+    snprintf(path, sizeof(path), "/proc/%d/%s", (int)pid, name);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+        n = read(fd, out, len - 1);
+        close(fd);
+    }
+    if (n <= 0) {
+        out[0] = '\0';
+        return;
+    }
+    out[n] = '\0';
+    for (ssize_t i = 0; i < n; i++) {
+        if (out[i] == '\0' || out[i] == '\n') {
+            out[i] = ' ';
+        }
+    }
+    while (n > 0 && out[n - 1] == ' ') {
+        out[--n] = '\0';
+    }
+}
+
+/* Logs which process sent the stop signal, with its user, command line and parent, so that a stop
+ * nobody planned can be told apart from a service restart (anti-tampering). On systemd hosts a
+ * `systemctl stop` shows up as wazuh-control run by PID 1; a kill from a shell shows the shell. */
+static void log_stop_sender(void)
+{
+    const pid_t pid = (pid_t)stop_sender_pid;
+
+    if (pid <= 0) {
+        return;
+    }
+#ifdef __linux__
+    char cmd[256], stat[256], pcmd[256] = "";
+    int ppid = 0;
+
+    read_proc_text(pid, "cmdline", cmd, sizeof(cmd));
+    read_proc_text(pid, "stat", stat, sizeof(stat));
+    /* stat: "pid (comm) state ppid ...", comm may contain spaces and parentheses */
+    const char *close_paren = strrchr(stat, ')');
+    if (close_paren) {
+        sscanf(close_paren + 1, " %*c %d", &ppid);
+    }
+    if (ppid > 0) {
+        read_proc_text(ppid, "cmdline", pcmd, sizeof(pcmd));
+    }
+    minfo("Stop requested by process %d (uid %d): '%s', parent %d: '%s'.", (int)pid, (int)stop_sender_uid,
+          cmd[0] ? cmd : "?", ppid, pcmd[0] ? pcmd : "?");
+#else
+    minfo("Stop requested by process %d (uid %d).", (int)pid, (int)stop_sender_uid);
+#endif
+}
+
 /* A signalled stop is not a failure: systemd tracks this process through PIDFile=.
  * Not HandleSIG(), whose exit(1) is shared with the manager daemons. */
 void agentd_shutdown(int sig)
 {
     minfo(SIGNAL_RECV, sig, strsignal(sig));
+    log_stop_sender();
 
     exit(0);
+}
+
+static void agentd_stop_siginfo(int sig, siginfo_t *info, __attribute__((unused)) void *context)
+{
+    if (info && info->si_code <= 0) { /* sent by a process (SI_USER, SI_QUEUE...), not the kernel */
+        stop_sender_pid = info->si_pid;
+        stop_sender_uid = info->si_uid;
+    }
+    agentd_shutdown(sig);
+}
+
+void agentd_install_stop_handlers(void)
+{
+    struct sigaction act;
+
+    memset(&act, 0, sizeof(act));
+    act.sa_sigaction = agentd_stop_siginfo;
+    act.sa_flags = SA_SIGINFO;
+    sigemptyset(&act.sa_mask);
+    sigaction(SIGTERM, &act, NULL);
+    sigaction(SIGINT, &act, NULL);
+    sigaction(SIGQUIT, &act, NULL);
 }
 
 #define SYSTEMD_PIDFILE_NAME "wazuh-agentd.pid"
