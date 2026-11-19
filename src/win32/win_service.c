@@ -416,11 +416,15 @@ VOID WINAPI OssecServiceCtrlHandler(DWORD dwOpcode)
  * SYSTEM's full control and leaves Administrators query, start and interrogate only: no
  * SERVICE_STOP (WP), DELETE (SD), SERVICE_CHANGE_CONFIG (DC), WRITE_DAC (WD) or WRITE_OWNER (WO). */
 #define SVC_SDDL_DEFAULT   "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
-#define SVC_SDDL_PROTECTED "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
+#define SVC_SDDL_PROTECTED "O:SYD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
 /* The service's registry key: Start=4 would disable it, ImagePath would replace it. Protected: no
  * inheritance, SYSTEM full control, Administrators and Users read only. */
 #define SVC_KEY_PATH       "MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WazuhSvc"
-#define SVC_KEY_PROTECTED  "D:P(A;CI;KA;;;SY)(A;CI;KR;;;BA)(A;CI;KR;;;BU)"
+#define SVC_KEY_PROTECTED  "O:SYD:P(A;CI;KA;;;SY)(A;CI;KR;;;BA)(A;CI;KR;;;BU)"
+/* The installation directory: SYSTEM full control, Administrators and Users read and execute, so
+ * that ossec.conf (package_uninstallation), client.keys and the binaries cannot be changed,
+ * renamed or deleted by an Administrator without first taking ownership back (audited, 4670). */
+#define INSTALL_DIR_PROTECTED "O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BA)(A;OICI;0x1200a9;;;BU)"
 
 static int set_service_dacl(const char *sddl)
 {
@@ -433,8 +437,15 @@ static int set_service_dacl(const char *sddl)
         return -1;
     }
     if ((scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT)) &&
-            (svc = OpenService(scm, g_lpszServiceName, READ_CONTROL | WRITE_DAC))) {
-        if (SetServiceObjectSecurity(svc, DACL_SECURITY_INFORMATION, sd)) {
+            (svc = OpenService(scm, g_lpszServiceName, READ_CONTROL | WRITE_DAC | WRITE_OWNER))) {
+        SECURITY_INFORMATION si = DACL_SECURITY_INFORMATION;
+        PSID owner = NULL;
+        BOOL owner_defaulted = FALSE;
+
+        if (GetSecurityDescriptorOwner(sd, &owner, &owner_defaulted) && owner) {
+            si |= OWNER_SECURITY_INFORMATION;
+        }
+        if (SetServiceObjectSecurity(svc, si, sd)) {
             ret = 0;
         } else {
             merror("Could not set the security of service '%s' (%lu).", g_lpszServiceName, GetLastError());
@@ -459,17 +470,21 @@ static int set_service_key_dacl(bool protect)
     if (protect) {
         PSECURITY_DESCRIPTOR sd = NULL;
         PACL dacl = NULL;
+        PSID owner = NULL;
         BOOL present = FALSE, defaulted = FALSE;
 
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(SVC_KEY_PROTECTED, SDDL_REVISION_1, &sd, NULL) ||
-                !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted)) {
+                !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) ||
+                !GetSecurityDescriptorOwner(sd, &owner, &defaulted)) {
             merror("Could not build the service key security descriptor (%lu).", GetLastError());
             LocalFree(sd);
             return -1;
         }
+        /* The owner goes back to SYSTEM too: an Administrator who took ownership of the key
+         * could otherwise rewrite its DACL. */
         rc = SetNamedSecurityInfoA(SVC_KEY_PATH, SE_REGISTRY_KEY,
-                                   DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                   NULL, NULL, dacl, NULL);
+                                   OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                   owner, NULL, dacl, NULL);
         LocalFree(sd);
     } else {
         /* An empty, unprotected DACL: the key goes back to what it inherits from Services. */
@@ -486,6 +501,92 @@ static int set_service_key_dacl(bool protect)
     return 0;
 }
 
+/* Restart the service when its process dies without a stop request (taskkill /f, a crash): the
+ * SCM runs these failure actions, and an Administrator cannot remove them without
+ * SERVICE_CHANGE_CONFIG, which the protected DACL takes away. */
+static int set_service_failure_actions(bool protect)
+{
+    SC_ACTION actions[3] = {
+        { SC_ACTION_RESTART, 5000 }, { SC_ACTION_RESTART, 5000 }, { SC_ACTION_RESTART, 30000 }
+    };
+    SERVICE_FAILURE_ACTIONS fa = { 0 };
+    SC_HANDLE scm = NULL, svc = NULL;
+    int ret = -1;
+
+    if (protect) {
+        fa.dwResetPeriod = 86400;
+        fa.cActions = 3;
+        fa.lpsaActions = actions;
+    } else {
+        fa.dwResetPeriod = 0;
+        fa.cActions = 0;
+        fa.lpsaActions = NULL;
+    }
+    if ((scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT)) &&
+            (svc = OpenService(scm, g_lpszServiceName, SERVICE_CHANGE_CONFIG | SERVICE_START))) {
+        if (ChangeServiceConfig2A(svc, SERVICE_CONFIG_FAILURE_ACTIONS, &fa)) {
+            ret = 0;
+        } else {
+            merror("Could not set the failure actions of service '%s' (%lu).", g_lpszServiceName, GetLastError());
+        }
+    } else {
+        merror("Could not open service '%s' to set its failure actions (%lu).", g_lpszServiceName, GetLastError());
+    }
+    if (svc) {
+        CloseServiceHandle(svc);
+    }
+    if (scm) {
+        CloseServiceHandle(scm);
+    }
+    return ret;
+}
+
+/* Protect the installation directory (the agent runs from it, so its own path is the one to use).
+ * Disabling the protection gives the directory back the ACL it inherits from Program Files. */
+static int set_install_dir_acl(bool protect)
+{
+    char dir[MAX_PATH] = "";
+    DWORD len = GetModuleFileNameA(NULL, dir, sizeof(dir));
+    char *slash;
+    DWORD rc;
+
+    if (len == 0 || len >= sizeof(dir) || !(slash = strrchr(dir, '\\'))) {
+        merror("Could not find the installation directory (%lu).", GetLastError());
+        return -1;
+    }
+    *slash = '\0';
+
+    if (protect) {
+        PSECURITY_DESCRIPTOR sd = NULL;
+        PACL dacl = NULL;
+        PSID owner = NULL;
+        BOOL present = FALSE, defaulted = FALSE;
+
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(INSTALL_DIR_PROTECTED, SDDL_REVISION_1, &sd, NULL) ||
+                !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) ||
+                !GetSecurityDescriptorOwner(sd, &owner, &defaulted)) {
+            merror("Could not build the installation directory security descriptor (%lu).", GetLastError());
+            LocalFree(sd);
+            return -1;
+        }
+        rc = SetNamedSecurityInfoA(dir, SE_FILE_OBJECT,
+                                   OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                   owner, NULL, dacl, NULL);
+        LocalFree(sd);
+    } else {
+        ACL empty;
+        InitializeAcl(&empty, sizeof(empty), ACL_REVISION);
+        rc = SetNamedSecurityInfoA(dir, SE_FILE_OBJECT,
+                                   DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                                   NULL, NULL, &empty, NULL);
+    }
+    if (rc != ERROR_SUCCESS) {
+        merror("Could not set the security of the installation directory (%lu).", rc);
+        return -1;
+    }
+    return 0;
+}
+
 int w_service_tamper_protection(int enable)
 {
     int ret = set_service_dacl(enable ? SVC_SDDL_PROTECTED : SVC_SDDL_DEFAULT);
@@ -493,8 +594,14 @@ int w_service_tamper_protection(int enable)
     if (set_service_key_dacl(enable) < 0) {
         ret = -1;
     }
+    if (set_service_failure_actions(enable) < 0) {
+        ret = -1;
+    }
+    if (set_install_dir_acl(enable) < 0) {
+        ret = -1;
+    }
     if (ret == 0) {
-        minfo(enable ? "Anti-tampering: service '%s' protected (Administrators cannot stop, delete or reconfigure it)."
+        minfo(enable ? "Anti-tampering: service '%s' protected (Administrators cannot stop, delete or reconfigure it, or change the installation directory; it restarts if killed)."
                      : "Anti-tampering: service '%s' permissions restored to the defaults.", g_lpszServiceName);
     }
     return ret;
