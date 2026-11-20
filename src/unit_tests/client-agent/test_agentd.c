@@ -292,6 +292,48 @@ static void test_uninstall_cli_denied(void **state) {
     assert_int_equal(w_uninstall_validation_cli(3, argv), 1);
 }
 
+// w_uninstall_parse_args (shared with wazuh-agent.exe --maintenance, which starts at argv[2])
+
+static void test_uninstall_parse_args_from_second(void **state) {
+    (void) state;
+    char *argv[] = { "wazuh-agent.exe", "--maintenance", "--uninstall-auth-host", "h:55000",
+                     "--uninstall-auth-login=user:pass", "--uninstall-ssl-verify", "0", NULL };
+    const char *token = "x", *login = NULL, *host = NULL;
+    bool ssl = true;
+
+    assert_int_equal(w_uninstall_parse_args(7, argv, 2, &token, &login, &host, &ssl), 0);
+    assert_null(token);
+    assert_string_equal(login, "user:pass");
+    assert_string_equal(host, "h:55000");
+    assert_false(ssl);
+}
+
+/* Starting at argv[1] would see --maintenance as an unknown option. */
+static void test_uninstall_parse_args_wrong_start(void **state) {
+    (void) state;
+    char *argv[] = { "wazuh-agent.exe", "--maintenance", "--uninstall-auth-host=h", "--uninstall-auth-token=t", NULL };
+    const char *token, *login, *host;
+    bool ssl;
+
+    expect_string(__wrap__merror, formatted_msg, "Unknown option: --maintenance");
+    assert_int_equal(w_uninstall_parse_args(4, argv, 1, &token, &login, &host, &ssl), 1);
+}
+
+/* Defaults when nothing is given: SSL verification on, no credentials, error logged. */
+static void test_uninstall_parse_args_defaults(void **state) {
+    (void) state;
+    char *argv[] = { "wazuh-agent.exe", "--maintenance", NULL };
+    const char *token = "x", *login = "y", *host = "z";
+    bool ssl = false;
+
+    expect_string(__wrap__merror, formatted_msg, "Uninstallation validation needs --uninstall-auth-host and --uninstall-auth-token or --uninstall-auth-login.");
+    assert_int_equal(w_uninstall_parse_args(2, argv, 2, &token, &login, &host, &ssl), 1);
+    assert_null(token);
+    assert_null(login);
+    assert_null(host);
+    assert_true(ssl);
+}
+
 // package_uninstall_validation
 
 static void test_package_uninstall_validation_token_success(void **state) {
@@ -594,6 +636,9 @@ int main(void) {
         cmocka_unit_test(test_uninstall_cli_unknown_option),
         cmocka_unit_test_setup_teardown(test_uninstall_cli_granted_separate_values, setup_group, teardown_group),
         cmocka_unit_test_setup_teardown(test_uninstall_cli_denied, setup_group, teardown_group),
+        cmocka_unit_test(test_uninstall_parse_args_from_second),
+        cmocka_unit_test(test_uninstall_parse_args_wrong_start),
+        cmocka_unit_test(test_uninstall_parse_args_defaults),
         cmocka_unit_test_setup_teardown(test_package_uninstall_validation_token_success, setup_group, teardown_group),
         cmocka_unit_test_setup_teardown(test_package_uninstall_validation_token_denied, setup_group, teardown_group),
         cmocka_unit_test_setup_teardown(test_package_uninstall_validation_login_success, setup_group, teardown_group),
