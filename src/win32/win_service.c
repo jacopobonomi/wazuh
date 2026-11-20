@@ -421,10 +421,12 @@ VOID WINAPI OssecServiceCtrlHandler(DWORD dwOpcode)
  * inheritance, SYSTEM full control, Administrators and Users read only. */
 #define SVC_KEY_PATH       "MACHINE\\SYSTEM\\CurrentControlSet\\Services\\WazuhSvc"
 #define SVC_KEY_PROTECTED  "O:SYD:P(A;CI;KA;;;SY)(A;CI;KR;;;BA)(A;CI;KR;;;BU)"
-/* The installation directory: SYSTEM full control, Administrators and Users read and execute, so
+/* The installation directory: SYSTEM full control, Administrators read and execute, so
  * that ossec.conf (package_uninstallation), client.keys and the binaries cannot be changed,
  * renamed or deleted by an Administrator without first taking ownership back (audited, 4670). */
-#define INSTALL_DIR_PROTECTED "O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BA)(A;OICI;0x1200a9;;;BU)"
+#define INSTALL_DIR_PROTECTED "O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BA)(A;;0x1200a9;;;AU)"
+/* What the installer sets (InstallerScripts.vbs): restored when anti-tampering is turned off. */
+#define INSTALL_DIR_DEFAULT   "O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;AU)"
 
 static int set_service_dacl(const char *sddl)
 {
@@ -556,30 +558,25 @@ static int set_install_dir_acl(bool protect)
     }
     *slash = '\0';
 
-    if (protect) {
-        PSECURITY_DESCRIPTOR sd = NULL;
-        PACL dacl = NULL;
-        PSID owner = NULL;
-        BOOL present = FALSE, defaulted = FALSE;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    PACL dacl = NULL;
+    PSID owner = NULL;
+    BOOL present = FALSE, defaulted = FALSE;
 
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(INSTALL_DIR_PROTECTED, SDDL_REVISION_1, &sd, NULL) ||
-                !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) ||
-                !GetSecurityDescriptorOwner(sd, &owner, &defaulted)) {
-            merror("Could not build the installation directory security descriptor (%lu).", GetLastError());
-            LocalFree(sd);
-            return -1;
-        }
-        rc = SetNamedSecurityInfoA(dir, SE_FILE_OBJECT,
-                                   OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                   owner, NULL, dacl, NULL);
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorA(protect ? INSTALL_DIR_PROTECTED : INSTALL_DIR_DEFAULT,
+                                                              SDDL_REVISION_1, &sd, NULL) ||
+            !GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) ||
+            !GetSecurityDescriptorOwner(sd, &owner, &defaulted)) {
+        merror("Could not build the installation directory security descriptor (%lu).", GetLastError());
         LocalFree(sd);
-    } else {
-        ACL empty;
-        InitializeAcl(&empty, sizeof(empty), ACL_REVISION);
-        rc = SetNamedSecurityInfoA(dir, SE_FILE_OBJECT,
-                                   DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                                   NULL, NULL, &empty, NULL);
+        return -1;
     }
+    /* The inheritable ACEs are propagated to everything inside, replacing the inherited ones; the explicit
+     * per-file grants the installer manages (Authenticated Users read on non-sensitive files) are kept. */
+    rc = SetNamedSecurityInfoA(dir, SE_FILE_OBJECT,
+                               OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                               owner, NULL, dacl, NULL);
+    LocalFree(sd);
     if (rc != ERROR_SUCCESS) {
         merror("Could not set the security of the installation directory (%lu).", rc);
         return -1;
