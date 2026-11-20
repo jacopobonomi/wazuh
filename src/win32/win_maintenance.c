@@ -45,6 +45,23 @@ static time_t maintenance_until;
 static int maintenance_window_s = MAINTENANCE_WINDOW_DEFAULT_S;
 static CRITICAL_SECTION maintenance_lock;
 
+/* Registers "Wazuh" as an Application log source, using EventCreate.exe's message table (IDs 1 to 1000
+ * print their single string as is), so that the events read as plain text in the Event Viewer and in
+ * the agent's eventchannel collection. */
+static void maintenance_register_source(void)
+{
+    static const char key_path[] = "SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\Wazuh";
+    static const char message_file[] = "%SystemRoot%\\System32\\EventCreate.exe";
+    DWORD types = EVENTLOG_ERROR_TYPE | EVENTLOG_WARNING_TYPE | EVENTLOG_INFORMATION_TYPE;
+    HKEY key;
+
+    if (RegCreateKeyExA(HKEY_LOCAL_MACHINE, key_path, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) == ERROR_SUCCESS) {
+        RegSetValueExA(key, "EventMessageFile", 0, REG_EXPAND_SZ, (const BYTE *)message_file, sizeof(message_file));
+        RegSetValueExA(key, "TypesSupported", 0, REG_DWORD, (const BYTE *)&types, sizeof(types));
+        RegCloseKey(key);
+    }
+}
+
 /* Copy to the Windows Application log, collected by the agent's default configuration. */
 static void maintenance_event(WORD type, const char *message)
 {
@@ -220,6 +237,7 @@ static DWORD WINAPI maintenance_expiry(__attribute__((unused)) LPVOID arg)
 void w_maintenance_start(void)
 {
     InitializeCriticalSection(&maintenance_lock);
+    maintenance_register_source();
     maintenance_window_s = getDefine_Int_default("agent", "anti_tampering_maintenance_window", 60, 86400,
                                                  MAINTENANCE_WINDOW_DEFAULT_S);
 
