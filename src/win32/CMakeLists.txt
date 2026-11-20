@@ -77,6 +77,7 @@ set(WIN_SYSTEM_LIBS
 add_library(
   win32_common OBJECT
   ${CMAKE_CURRENT_SOURCE_DIR}/win_agent.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/win_maintenance.c
   ${CMAKE_CURRENT_SOURCE_DIR}/win_service.c
   ${CMAKE_CURRENT_SOURCE_DIR}/win_utils.c)
 target_compile_definitions(win32_common PRIVATE OSSECHIDS ARGV0="wazuh-agent"

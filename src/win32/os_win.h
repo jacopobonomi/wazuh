@@ -72,4 +72,16 @@ int run_service_restart(void);
  */
 int w_service_tamper_protection(int enable);
 
+/**
+ * @brief Starts the anti-tampering maintenance channel (see win_maintenance.c): a local pipe through
+ * which an Administrator can ask for the protection to be lifted for a while, if the manager grants it.
+ */
+void w_maintenance_start(void);
+
+/**
+ * @brief wazuh-agent.exe --maintenance --uninstall-auth-host ... (--uninstall-auth-token ... | --uninstall-auth-login ...)
+ * @return 0 if the manager granted it and the protection was lifted, 1 otherwise.
+ */
+int w_maintenance_cli(int argc, char **argv);
+
 #endif /* OS_WIN_H */

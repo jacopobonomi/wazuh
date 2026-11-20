@@ -115,13 +115,14 @@ static const char *uninstall_option_value(int argc, char **argv, int *i, const c
     return NULL;
 }
 
-int w_uninstall_validation_cli(int argc, char **argv) {
-    const char *login = NULL;
-    const char *token = NULL;
-    const char *host = NULL;
-    bool ssl_verify = true;
+int w_uninstall_parse_args(int argc, char **argv, int first, const char **token, const char **login,
+                           const char **host, bool *ssl_verify) {
+    *token = NULL;
+    *login = NULL;
+    *host = NULL;
+    *ssl_verify = true;
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = first; i < argc; i++) {
         bool matched = false;
         const char *value;
 
@@ -130,24 +131,24 @@ int w_uninstall_validation_cli(int argc, char **argv) {
                 merror("--uninstall-auth-login needs an argument");
                 return 1;
             }
-            login = value;
+            *login = value;
         } else if ((value = uninstall_option_value(argc, argv, &i, "--uninstall-auth-token", &matched)), matched) {
             if (!value || *value == '\0') {
                 merror("--uninstall-auth-token needs an argument");
                 return 1;
             }
-            token = value;
+            *token = value;
         } else if ((value = uninstall_option_value(argc, argv, &i, "--uninstall-auth-host", &matched)), matched) {
             if (!value || *value == '\0') {
                 merror("--uninstall-auth-host needs an argument");
                 return 1;
             }
-            host = value;
+            *host = value;
         } else if ((value = uninstall_option_value(argc, argv, &i, "--uninstall-ssl-verify", &matched)), matched) {
             if (!value || *value == '\0' || !strcasecmp(value, "true") || !strcmp(value, "1")) {
-                ssl_verify = true;
+                *ssl_verify = true;
             } else if (!strcasecmp(value, "false") || !strcmp(value, "0")) {
-                ssl_verify = false;
+                *ssl_verify = false;
             } else {
                 merror("--uninstall-ssl-verify accepts 'true'/'false' or '1'/'0' as arguments");
                 return 1;
@@ -158,8 +159,20 @@ int w_uninstall_validation_cli(int argc, char **argv) {
         }
     }
 
-    if (!host || (!token && !login)) {
+    if (!*host || (!*token && !*login)) {
         merror("Uninstallation validation needs --uninstall-auth-host and --uninstall-auth-token or --uninstall-auth-login.");
+        return 1;
+    }
+    return 0;
+}
+
+int w_uninstall_validation_cli(int argc, char **argv) {
+    const char *login = NULL;
+    const char *token = NULL;
+    const char *host = NULL;
+    bool ssl_verify = true;
+
+    if (w_uninstall_parse_args(argc, argv, 1, &token, &login, &host, &ssl_verify) != 0) {
         return 1;
     }
 

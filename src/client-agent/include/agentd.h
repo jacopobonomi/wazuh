@@ -135,6 +135,14 @@ bool package_uninstall_validation(const char *uninstall_auth_token, const char *
  * */
 int w_uninstall_validation_cli(int argc, char **argv);
 
+/**
+ * Parses the --uninstall-auth-* and --uninstall-ssl-verify options from argv[first] on.
+ * Shared by w_uninstall_validation_cli() and the Windows maintenance request (wazuh-agent.exe --maintenance).
+ * @return 0 if a host and a token or a login were given, 1 otherwise (logged)
+ */
+int w_uninstall_parse_args(int argc, char **argv, int first, const char **token, const char **login,
+                           const char **host, bool *ssl_verify);
+
 // Thread to rotate internal log
 #ifdef WIN32
 DWORD WINAPI w_rotate_log_thread(LPVOID arg);

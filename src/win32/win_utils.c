@@ -377,6 +377,10 @@ int local_start()
      * delete or reconfigure the service and to change its registry key; SYSTEM (this service, the
      * MSI and WPK upgrades) keeps it. Restored to the defaults when the option is turned off. */
     w_service_tamper_protection(atc->package_uninstallation);
+    if (atc->package_uninstallation) {
+        /* Lets an Administrator with the manager's permission lift the protection for maintenance. */
+        w_maintenance_start();
+    }
 
     if (!w_agent_validate_manager_address(agt, NULL)) {
         mlerror_exit(LOGLEVEL_ERROR, CLIENT_ERROR);
