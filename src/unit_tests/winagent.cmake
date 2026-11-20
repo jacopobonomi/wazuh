@@ -66,6 +66,7 @@ list(APPEND obj_files ${os_execd_lib})
 
 # Add win32 objects
 file(GLOB win32_files
+  ${SRC_FOLDER}/build/win32/CMakeFiles/win32_common.dir/win_maintenance.c.obj
   ${SRC_FOLDER}/build/win32/CMakeFiles/win32_common.dir/win_service.c.obj
   ${SRC_FOLDER}/build/win32/CMakeFiles/win32_common.dir/win_utils.c.obj)
 list(APPEND obj_files ${win32_files})
