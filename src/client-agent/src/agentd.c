@@ -23,12 +23,18 @@ void reload_handler(int signum) {
     }
 }
 
+#ifdef WAZUH_UNIT_TESTING
+    #define STATIC
+#else
+    #define STATIC static
+#endif
+
 /* Who asked the agent to stop: filled by agentd_stop_siginfo() from the siginfo of the signal. */
-static volatile sig_atomic_t stop_sender_pid = 0;
-static volatile sig_atomic_t stop_sender_uid = -1;
+STATIC volatile sig_atomic_t stop_sender_pid = 0;
+STATIC volatile sig_atomic_t stop_sender_uid = -1;
 
 /* Copies /proc/<pid>/<name> into out, NULs (cmdline separators) turned into spaces. */
-static void read_proc_text(pid_t pid, const char *name, char *out, size_t len)
+STATIC void read_proc_text(pid_t pid, const char *name, char *out, size_t len)
 {
     char path[64];
     ssize_t n = -1;
@@ -55,10 +61,23 @@ static void read_proc_text(pid_t pid, const char *name, char *out, size_t len)
     }
 }
 
+/* Parent PID from the text of /proc/<pid>/stat: "pid (comm) state ppid ...". comm may contain spaces
+ * and parentheses, so the fields are read after the last ')'. 0 if it cannot be read. */
+STATIC int stop_sender_ppid(const char *stat)
+{
+    const char *close_paren = strrchr(stat, ')');
+    int ppid = 0;
+
+    if (!close_paren || sscanf(close_paren + 1, " %*c %d", &ppid) != 1) {
+        return 0;
+    }
+    return ppid;
+}
+
 /* Logs which process sent the stop signal, with its user, command line and parent, so that a stop
  * nobody planned can be told apart from a service restart (anti-tampering). On systemd hosts a
  * `systemctl stop` shows up as wazuh-control run by PID 1; a kill from a shell shows the shell. */
-static void log_stop_sender(void)
+STATIC void log_stop_sender(void)
 {
     const pid_t pid = (pid_t)stop_sender_pid;
 
@@ -71,11 +90,7 @@ static void log_stop_sender(void)
 
     read_proc_text(pid, "cmdline", cmd, sizeof(cmd));
     read_proc_text(pid, "stat", stat, sizeof(stat));
-    /* stat: "pid (comm) state ppid ...", comm may contain spaces and parentheses */
-    const char *close_paren = strrchr(stat, ')');
-    if (close_paren) {
-        sscanf(close_paren + 1, " %*c %d", &ppid);
-    }
+    ppid = stop_sender_ppid(stat);
     if (ppid > 0) {
         read_proc_text(ppid, "cmdline", pcmd, sizeof(pcmd));
     }
@@ -96,12 +111,19 @@ void agentd_shutdown(int sig)
     exit(0);
 }
 
-static void agentd_stop_siginfo(int sig, siginfo_t *info, __attribute__((unused)) void *context)
+/* Keeps the sender of a signal sent by a process (SI_USER, SI_QUEUE...: si_code <= 0); signals
+ * raised by the kernel carry no sender. */
+STATIC void record_stop_sender(const siginfo_t *info)
 {
-    if (info && info->si_code <= 0) { /* sent by a process (SI_USER, SI_QUEUE...), not the kernel */
+    if (info && info->si_code <= 0) {
         stop_sender_pid = info->si_pid;
         stop_sender_uid = info->si_uid;
     }
+}
+
+STATIC void agentd_stop_siginfo(int sig, siginfo_t *info, __attribute__((unused)) void *context)
+{
+    record_stop_sender(info);
     agentd_shutdown(sig);
 }
 

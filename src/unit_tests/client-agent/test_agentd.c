@@ -499,6 +499,136 @@ static void test_agentd_shutdown_sigint_exits_zero(void **state) {
     expect_assert_failure(agentd_shutdown(SIGINT));
 }
 
+
+/* Who asked the agent to stop (agentd.c, STATIC under WAZUH_UNIT_TESTING) */
+
+extern volatile sig_atomic_t stop_sender_pid;
+extern volatile sig_atomic_t stop_sender_uid;
+int stop_sender_ppid(const char *stat);
+void read_proc_text(pid_t pid, const char *name, char *out, size_t len);
+void record_stop_sender(const siginfo_t *info);
+void agentd_stop_siginfo(int sig, siginfo_t *info, void *context);
+
+static int reset_stop_sender(void **state) {
+    (void) state;
+    stop_sender_pid = 0;
+    stop_sender_uid = -1;
+    return 0;
+}
+
+static void test_stop_sender_ppid_plain(void **state) {
+    (void) state;
+    assert_int_equal(stop_sender_ppid("1234 (bash) S 42 1234 1234 34816 1234 4194560"), 42);
+}
+
+/* comm is free text: spaces and parentheses must not shift the fields. */
+static void test_stop_sender_ppid_odd_comm(void **state) {
+    (void) state;
+    assert_int_equal(stop_sender_ppid("77 (my (odd) proc) R 9 77 77 0 -1"), 9);
+}
+
+static void test_stop_sender_ppid_malformed(void **state) {
+    (void) state;
+    assert_int_equal(stop_sender_ppid("no parenthesis here"), 0);
+    assert_int_equal(stop_sender_ppid("5 (x)"), 0);
+    assert_int_equal(stop_sender_ppid(""), 0);
+}
+
+static void test_read_proc_text_own_cmdline(void **state) {
+    (void) state;
+    char out[256];
+
+    read_proc_text(getpid(), "cmdline", out, sizeof(out));
+    /* argv[0] is this test binary; separators turned into spaces, none left at the end. */
+    assert_non_null(strstr(out, "test_agentd"));
+    assert_true(out[0] != '\0');
+    assert_true(out[strlen(out) - 1] != ' ');
+}
+
+static void test_read_proc_text_truncates(void **state) {
+    (void) state;
+    char out[5];
+
+    read_proc_text(getpid(), "stat", out, sizeof(out));
+    assert_int_equal(strlen(out), 4);
+}
+
+static void test_read_proc_text_missing_process(void **state) {
+    (void) state;
+    char out[64] = "stale";
+
+    /* Above pid_max on any Linux: never a running process. */
+    read_proc_text((pid_t)0x7ffffff0, "cmdline", out, sizeof(out));
+    assert_string_equal(out, "");
+}
+
+static void test_record_stop_sender_from_process(void **state) {
+    (void) state;
+    siginfo_t info;
+
+    memset(&info, 0, sizeof(info));
+    info.si_code = SI_USER;
+    info.si_pid = 4321;
+    info.si_uid = 1000;
+    record_stop_sender(&info);
+    assert_int_equal(stop_sender_pid, 4321);
+    assert_int_equal(stop_sender_uid, 1000);
+}
+
+/* A kernel-generated signal (si_code > 0) has no sender to report. */
+static void test_record_stop_sender_from_kernel(void **state) {
+    (void) state;
+    siginfo_t info;
+
+    memset(&info, 0, sizeof(info));
+    info.si_code = SI_KERNEL;
+    info.si_pid = 4321;
+    record_stop_sender(&info);
+    assert_int_equal(stop_sender_pid, 0);
+
+    record_stop_sender(NULL);
+    assert_int_equal(stop_sender_pid, 0);
+}
+
+static int starts_with(const LargestIntegralType value, const LargestIntegralType prefix) {
+    return strncmp((const char *)value, (const char *)prefix, strlen((const char *)prefix)) == 0;
+}
+
+/* The whole handler: the stop is logged with the sender, then the agent exits 0. */
+static void test_agentd_stop_siginfo_logs_sender(void **state) {
+    (void) state;
+    siginfo_t info;
+    static char prefix[128];
+
+    memset(&info, 0, sizeof(info));
+    info.si_code = SI_USER;
+    info.si_pid = getpid();
+    info.si_uid = getuid();
+    snprintf(prefix, sizeof(prefix), "Stop requested by process %d (uid %d): '", (int)getpid(), (int)getuid());
+
+    expect_string(__wrap__minfo, formatted_msg,
+                  "(1225): SIGNAL [(15)-(Terminated)] Received. Exit Cleaning...");
+    expect_check(__wrap__minfo, formatted_msg, starts_with, cast_to_largest_integral_type(prefix));
+    expect_value(__wrap_exit, code, 0);
+
+    expect_assert_failure(agentd_stop_siginfo(SIGTERM, &info, NULL));
+}
+
+/* No sender recorded (kernel signal): only the usual line. */
+static void test_agentd_stop_siginfo_kernel_signal(void **state) {
+    (void) state;
+    siginfo_t info;
+
+    memset(&info, 0, sizeof(info));
+    info.si_code = SI_KERNEL;
+
+    expect_string(__wrap__minfo, formatted_msg,
+                  "(1225): SIGNAL [(15)-(Terminated)] Received. Exit Cleaning...");
+    expect_value(__wrap_exit, code, 0);
+
+    expect_assert_failure(agentd_stop_siginfo(SIGTERM, &info, NULL));
+}
+
 #endif // TEST_AGENT
 
 int main(void) {
@@ -538,6 +668,18 @@ int main(void) {
         // agentd_shutdown
         cmocka_unit_test(test_agentd_shutdown_sigterm_exits_zero),
         cmocka_unit_test(test_agentd_shutdown_sigint_exits_zero),
+
+        // who asked the agent to stop
+        cmocka_unit_test(test_stop_sender_ppid_plain),
+        cmocka_unit_test(test_stop_sender_ppid_odd_comm),
+        cmocka_unit_test(test_stop_sender_ppid_malformed),
+        cmocka_unit_test(test_read_proc_text_own_cmdline),
+        cmocka_unit_test(test_read_proc_text_truncates),
+        cmocka_unit_test(test_read_proc_text_missing_process),
+        cmocka_unit_test_setup_teardown(test_record_stop_sender_from_process, reset_stop_sender, reset_stop_sender),
+        cmocka_unit_test_setup_teardown(test_record_stop_sender_from_kernel, reset_stop_sender, reset_stop_sender),
+        cmocka_unit_test_setup_teardown(test_agentd_stop_siginfo_logs_sender, reset_stop_sender, reset_stop_sender),
+        cmocka_unit_test_setup_teardown(test_agentd_stop_siginfo_kernel_signal, reset_stop_sender, reset_stop_sender),
 
 #endif // TEST_AGENT
     };
